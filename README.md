@@ -17,7 +17,15 @@ Test split: 420 images, 611 sources. Latency: RTX 5070 Ti, TensorRT 10.13.3.9 fp
 
 - **e2e**: one call of each framework's own inference path. It starts from a decoded uint8 image in RAM and ends with final boxes, scores, labels and keypoints on the CPU, so preprocessing, the network, postprocessing and the device-to-host copy are all included. **engine**: TensorRT execute only, timed with the same loop for both models (`measure_engine.py`).
 - The images are 450×450, and both models upscale them. Gal-DINO at 640 is the same released checkpoint run at a smaller test size, not retrained. At equal 640 input, D-FINE-seg S scores +5.7 box AP and +13.7 keypoint AP, and is 4.1x faster e2e (4.9x engine-only).
-- Size bins are small and noisy (only 68 large test objects). D-FINE-seg is behind on box APL (32.0 vs 36.3) and keypoint APM (76.0 vs 81.6). `score.py` prints every bin.
+- The same paper's Gal-YOLOv8 (Table 4, no keypoints) has the best published box AP: 54.5 / 58.5 / 57.2 (APS 45.5, APM 55.4, APL 34.0). This repo reproduces Gal-DINO only, because it is the published model that also predicts hosts.
+- Size bins are small and noisy (only 68 large test objects). The released model is behind on box APL (32.0 vs 36.3) and keypoint APM (76.0 vs 81.6). Over three training seeds, box APL ranges 31.7–38.4 and keypoint APM 76.6–82.6. `score.py` prints every bin.
+- Seed spread: over three training seeds (PyTorch, test), D-FINE-seg S scores 57.7 ± 0.9 box AP and 61.7 ± 0.8 keypoint AP. See *Train it yourself*.
+
+## Host examples
+
+![Infrared-host predictions of D-FINE-seg and Gal-DINO](figures/host_examples.png)
+
+`figures/make_figure.py` draws the figure from the bundled TensorRT predictions. Each model runs at its own F1-optimal box confidence (D-FINE-seg 0.74, Gal-DINO 0.35), because the two models calibrate their scores very differently. A source counts as identified when it is detected (same class, IoU ≥ 0.5, one-to-one) and the predicted host has OKS ≥ 0.5, the benchmark's own rule. Of the 608 test sources whose host is inside the image, D-FINE-seg identifies 433 (71.2%) and Gal-DINO 345 (56.7%): 305 by both, 128 by D-FINE-seg only, 40 by Gal-DINO only. Box F1: 0.724 vs 0.630.
 
 ## Quick check: score the bundled predictions (no GPU, no models)
 
@@ -63,7 +71,7 @@ python data/build_dfine_dataset.py                 # data/dataset: symlinked ima
 DFINE_SEG_CONFIG_DIR=dfine uv run dfine train      # 75 epochs, best checkpoint by val -> output/models/
 ```
 
-The config is `dfine/config.yaml`: S model, COCO-detection init (auto-downloaded), 640² input, one keypoint with OKS sigma 0.107 (Gal-DINO's value), flips and 90° rotations. Photometric augmentations are off because the image channels encode radio intensity. The best checkpoint is picked on the val split. The released model is a single run (seed 42); expect run-to-run noise of a few tenths of AP.
+The config is `dfine/config.yaml`: S model, COCO-detection init (auto-downloaded), 640² input, one keypoint with OKS sigma 0.107 (Gal-DINO's value), flips and 90° rotations. Photometric augmentations are off because the image channels encode radio intensity. The best checkpoint is picked on the val split. The released model is seed 42, the first run. Two more seeds (1, 2) with the same config scored, in PyTorch on test, 56.7 and 58.0 box AP and 61.0 and 62.6 keypoint AP; over the three seeds that is 57.7 ± 0.9 box AP and 61.7 ± 0.8 keypoint AP (mean ± sample SD). Expect a retrain to land anywhere in that range.
 
 `build_dfine_dataset.py` makes two geometry-only fixes to the training copy, because D-FINE-seg's augmentation pipeline rejects boxes outside the image: boxes and polygons are clipped to the image (40 boxes overshoot by at most 1 px), and the 17 host keypoints that lie outside the image (3 of them in test) are marked unlabeled. Scoring always uses the original JSON, where those 3 test hosts cannot be matched by any model.
 
