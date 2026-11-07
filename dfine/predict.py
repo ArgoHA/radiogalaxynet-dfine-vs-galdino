@@ -5,8 +5,11 @@
   uv run python dfine/predict.py --model weights/model.engine --out preds.json
   uv run python dfine/predict.py --model weights/model.engine --latency --conf 0.5 --repeats 3
 
-Scoring uses conf 0.001 (COCO AP needs the low-score tail; Gal-DINO submits its full top-300).
-Latency uses conf 0.5, the operating point, matching galdino/latency.py.
+Same protocol as Gal-DINO: top-300 over queries x classes, no NMS (`--nms 1` turns on D-FINE-seg's
+class-agnostic NMS at IoU 0.7, used only for the robustness row; `score.py --nms` does the same
+post hoc for any results file). Scoring uses conf 0.001 (COCO AP needs the low-score tail;
+Gal-DINO submits its full top-300). Latency uses conf 0.5, the operating point, matching
+galdino/latency.py.
 e2e latency = decoded uint8 BGR image in RAM -> final boxes / scores / labels / keypoints on CPU.
 """
 
@@ -29,7 +32,7 @@ if __name__ == "__main__":
     ap.add_argument("--split", default="test")
     ap.add_argument("--out", default=None)
     ap.add_argument("--conf", type=float, default=0.001)
-    ap.add_argument("--nms", type=int, default=1)
+    ap.add_argument("--nms", type=int, default=0, help="1 = class-agnostic NMS (not the protocol)")
     ap.add_argument("--latency", action="store_true")
     ap.add_argument("--repeats", type=int, default=1, help="latency passes over the split")
     args = ap.parse_args()

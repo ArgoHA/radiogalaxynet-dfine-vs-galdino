@@ -2,15 +2,17 @@
 
   uv run python figures/make_figure.py      -> figures/host_examples.{png,pdf} + printed counts
 
-Uses the bundled TensorRT predictions (predictions/*.json.gz). Each model runs at its own
-F1-optimal confidence: the two models calibrate scores very differently (at 0.5 Gal-DINO keeps
-only ~0.5 boxes per image), so one shared threshold would be unfair to one of them.
+Uses the bundled TensorRT predictions (predictions/*.json.gz), the benchmark protocol for both
+models (top-300, no NMS). Each model runs at its own confidence, the one that maximizes box F1 on
+the val split: the two models calibrate scores very differently (at 0.5 Gal-DINO keeps only ~0.5
+boxes per image), so one shared threshold would be unfair to one of them. Counts are on test.
 Matching is one-to-one per image: predictions in score order take the unmatched same-class GT
 box with the highest IoU >= 0.5. A matched source's host is "correct" when the keypoint has
 OKS >= 0.5 with the GT host (sigma 0.107, scale = GT box area, the benchmark's own rule), so the
 allowed distance grows with source size.
 
-Panels: the infrared image (inverted grayscale) with radio contours, cropped around the source.
+Panels: the infrared image (inverted grayscale) with radio contours, cropped around the source
+and every marker (a dashed line marks the image edge when the crop extends past it).
 Rows: D-FINE-seg right where Gal-DINO misplaces the host; both right; D-FINE-seg failures
 (two wrong hosts, one missed source that Gal-DINO gets, one that both miss).
 """
@@ -27,9 +29,9 @@ from matplotlib.lines import Line2D
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "RadioGalaxyNET"
-PRED = {
-    "D-FINE-seg": ROOT / "predictions" / "dfine_s_trt_fp16_640_test.json.gz",
-    "Gal-DINO": ROOT / "predictions" / "galdino_trt_fp16_800_test.json.gz",
+PRED = {  # {split} is filled with "val" (threshold choice) and "test" (counts, panels)
+    "D-FINE-seg": "dfine_s_trt_fp16_640_{split}.json.gz",
+    "Gal-DINO": "galdino_trt_fp16_800_{split}.json.gz",
 }
 SIGMA2X2 = (2 * 0.107) ** 2
 STYLE = {  # validated categorical pair (blue, orange) + shape as the second encoding
@@ -49,9 +51,9 @@ def iou(a, b):
     return inter / (a[2] * a[3] + b[2] * b[3] - inter + 1e-9)
 
 
-def load_preds(path):
+def load_preds(name, split):
     by_img = {}
-    with gzip.open(path, "rt") as f:
+    with gzip.open(ROOT / "predictions" / name.format(split=split), "rt") as f:
         for d in json.load(f):
             by_img.setdefault(d["image_id"], []).append(d)
     for v in by_img.values():
@@ -105,24 +107,35 @@ def host(gt, p):
 
 def render(ax, img, gt, res):
     x, y, w, h = gt["bbox"]
-    # square crop around the source box + true host + predicted hosts, shifted to stay inside
+    ih, iw = img.shape[:2]
+    # square crop around the source box + true host + predicted hosts. It is shifted to stay
+    # inside the image when it can; otherwise it extends past the edge (zero padding).
     pts = [(x, y), (x + w, y + h), tuple(gt["keypoints"][:2])]
     pts += [r[0] for r in res.values() if r[0] is not None]
     xs, ys = [q[0] for q in pts], [q[1] for q in pts]
     span = max(max(xs) - min(xs), max(ys) - min(ys))
-    side = int(min(img.shape[0], span * 1.35 + 24))
-    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
-    x0 = int(min(max(0, cx - side / 2), img.shape[1] - side))
-    y0 = int(min(max(0, cy - side / 2), img.shape[0] - side))
+    side = int(span * 1.35 + 24)
+
+    def start(lo, hi, size):
+        s = (lo + hi) / 2 - side / 2
+        s = min(max(s, min(0, lo - 12)), max(size, hi + 12) - side)  # inside if possible
+        return int(math.floor(s))
+
+    x0, y0 = start(min(xs), max(xs), iw), start(min(ys), max(ys), ih)
     x1, y1 = x0 + side, y0 + side
-    ir = img[y0:y1, x0:x1, 2].astype(np.float32)
-    radio = img[y0:y1, x0:x1, 0].astype(np.float32) * 256 + img[y0:y1, x0:x1, 1]
+    pad = max(0, -x0, -y0, x1 - iw, y1 - ih)
+    big = np.pad(img, ((pad, pad), (pad, pad), (0, 0)))
+    crop = big[y0 + pad : y1 + pad, x0 + pad : x1 + pad]
+    ir = crop[..., 2].astype(np.float32)  # BGR: R = infrared
+    radio = crop[..., 0].astype(np.float32)  # B (G is a near-copy) = radio
     ext = (x0, x1, y1, y0)
     ax.imshow(ir, cmap="Greys", vmin=0, vmax=320, extent=ext, interpolation="bilinear")
     if radio.max() > 0:
-        lv = np.geomspace(max(radio[radio > 0].min(), 256), radio.max(), 5)[:-1]
+        lv = np.geomspace(max(radio[radio > 0].min(), 1), radio.max(), 5)[:-1]
         ax.contour(radio, levels=np.unique(lv), colors="#7a7a7a", linewidths=0.8,
                    extent=(x0, x1, y0, y1), origin="upper")
+    if pad:
+        ax.add_patch(plt.Rectangle((0, 0), iw, ih, fill=False, ls="--", lw=0.8, ec="#9a9a9a"))
     gx, gy = gt["keypoints"][:2]
     ax.scatter([gx], [gy], zorder=3, **STYLE["GT"])
     for name in ("Gal-DINO", "D-FINE-seg"):
@@ -142,28 +155,37 @@ def render(ax, img, gt, res):
 
 
 def main():
-    gt_json = json.load(open(DATA / "annotations" / "test.json"))
+    def load_gt(split):
+        j = json.load(open(DATA / "annotations" / f"{split}.json"))
+        by_img = {i["id"]: [] for i in j["images"]}
+        for a in j["annotations"]:
+            by_img[a["image_id"]].append(a)
+        return j, by_img
+
+    gt_json, gts_by_img = load_gt("test")
+    _, val_gts = load_gt("val")
     files = {i["id"]: i["file_name"] for i in gt_json["images"]}
-    preds = {k: load_preds(v) for k, v in PRED.items()}
-    gts_by_img = {i: [] for i in files}
-    for a in gt_json["annotations"]:
-        gts_by_img[a["image_id"]].append(a)
+    size = {i["id"]: (i["width"], i["height"]) for i in gt_json["images"]}
+    preds = {k: load_preds(v, "test") for k, v in PRED.items()}
+    n_gt = sum(len(v) for v in gts_by_img.values())
 
     matched, confs = {}, {}
     for k in PRED:
-        f1, confs[k] = best_conf(gts_by_img, preds[k])
+        val_f1, confs[k] = best_conf(val_gts, load_preds(PRED[k], "val"))
         matched[k], fp = {}, 0
         for img_id, gts in gts_by_img.items():
             m, f = match(gts, preds[k].get(img_id, []), confs[k])
             matched[k].update(m)
             fp += f
-        print(f"{k:11s} F1-optimal conf {confs[k]:.2f}: box F1 {f1:.3f}, "
-              f"TP {len(matched[k])}, FP {fp}")
+        tp = len(matched[k])
+        print(f"{k:11s} conf {confs[k]:.2f} (val F1 {val_f1:.3f}): test box F1 "
+              f"{2 * tp / (tp + fp + n_gt):.3f}, TP {tp}, FP {fp}")
 
     rows = []
     for a in gt_json["annotations"]:
         kx, ky = a["keypoints"][:2]
-        if not (0 <= kx <= 450 and 0 <= ky <= 450):
+        w, h = size[a["image_id"]]
+        if not (0 <= kx <= w and 0 <= ky <= h):
             continue  # 3 GT hosts lie outside the image; no model can match them
         rows.append((a, {k: host(a, matched[k].get(a["id"])) for k in PRED}))
 
@@ -184,7 +206,7 @@ def main():
     def pick(cands, key, k, skip=()):
         """k examples by key, at most one per image."""
         out, seen = [], {r[0]["image_id"] for r in skip}
-        for r in sorted(cands, key=key):
+        for r in sorted(cands, key=key) if k > 0 else []:
             if r[0]["image_id"] not in seen:
                 out.append(r)
                 seen.add(r[0]["image_id"])
@@ -203,8 +225,7 @@ def main():
     same = [r for r in d_ok if r[1]["Gal-DINO"][2]]
     wrong = [r for r in rows if found(r, "D-FINE-seg") and not r[1]["D-FINE-seg"][2]]
     miss_g_ok = [r for r in rows if not found(r, "D-FINE-seg") and r[1]["Gal-DINO"][2]]
-    miss_both = [r for r in rows if not found(r, "D-FINE-seg") and not r[1]["Gal-DINO"][2]]
-    used = []
+    miss_both = [r for r in rows if not found(r, "D-FINE-seg") and not found(r, "Gal-DINO")]
     s1 = pick(win, lambda r: -r[1]["Gal-DINO"][1], N_COLS)
     s2 = pick(same, big, N_COLS, skip=s1)
     used = s1 + s2

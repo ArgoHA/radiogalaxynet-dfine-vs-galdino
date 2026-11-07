@@ -15,7 +15,11 @@ Protocol (copied from Gal-DINO datasets/coco_eval.py + engine.evaluate, see SCOR
 Input results JSON (optionally .json.gz): list of {image_id, category_id, bbox [x, y, w, h], score, keypoints}.
 `keypoints` is [x, y, v] (or Gal-DINO's [x, y]); only x and y are used.
 
-Usage: python score.py data/RadioGalaxyNET/annotations/test.json RESULTS.json[.gz] [--json OUT.json] [--quiet]
+Protocol: no NMS (Gal-DINO's own: full top-300 per image). `--nms 0.7` instead applies greedy
+class-agnostic NMS per image at that IoU before scoring, identical to D-FINE-seg's built-in NMS
+(torchvision.ops.nms over all classes); it is used only for the "both with NMS" robustness rows.
+
+Usage: python score.py data/RadioGalaxyNET/annotations/test.json RESULTS.json[.gz] [--nms IOU] [--json OUT.json] [--quiet]
 """
 
 import argparse
@@ -61,7 +65,32 @@ def _ap(ev, area):
     return float(np.mean(p)) if p.size else -1.0
 
 
-def score(gt_path, results, img_ids=None, verbose=True):
+def nms(results, iou_thr):
+    """Greedy class-agnostic NMS per image (keeps the higher score; IoU on [x, y, w, h] boxes)."""
+    by_img = {}
+    for r in results:
+        by_img.setdefault(r["image_id"], []).append(r)
+    out = []
+    for dets in by_img.values():
+        dets.sort(key=lambda r: -r["score"])
+        b = np.array([r["bbox"] for r in dets], dtype=np.float64).reshape(-1, 4)
+        x1, y1, x2, y2 = b[:, 0], b[:, 1], b[:, 0] + b[:, 2], b[:, 1] + b[:, 3]
+        area = b[:, 2] * b[:, 3]
+        alive = np.ones(len(dets), bool)
+        for i in range(len(dets)):
+            if not alive[i]:
+                continue
+            out.append(dets[i])
+            iw = np.clip(np.minimum(x2[i], x2) - np.maximum(x1[i], x1), 0, None)
+            ih = np.clip(np.minimum(y2[i], y2) - np.maximum(y1[i], y1), 0, None)
+            inter = iw * ih
+            with np.errstate(invalid="ignore"):  # 0/0 for zero-area boxes -> NaN -> kept
+                iou = inter / (area[i] + area - inter)
+            alive &= ~(iou > iou_thr)
+    return out
+
+
+def score(gt_path, results, img_ids=None, verbose=True, nms_iou=None):
     with contextlib.redirect_stdout(io.StringIO()):
         coco_gt = COCO(gt_path)
     if isinstance(results, str):
@@ -71,6 +100,8 @@ def score(gt_path, results, img_ids=None, verbose=True):
     img_ids = sorted(coco_gt.getImgIds()) if img_ids is None else sorted(img_ids)
     keep = set(img_ids)
     results = [r for r in results if r["image_id"] in keep]
+    if nms_iou is not None:
+        results = nms(results, nms_iou)
     bb = [{k: r[k] for k in ("image_id", "category_id", "bbox", "score")} for r in results]
     kp = [{k: r[k] for k in ("image_id", "category_id", "keypoints", "score")} for r in results]
 
@@ -96,8 +127,10 @@ def main():
     ap.add_argument("results")
     ap.add_argument("--json", help="write metrics here")
     ap.add_argument("--quiet", action="store_true", help="skip the pycocotools printout")
+    ap.add_argument("--nms", type=float, default=None, metavar="IOU",
+                    help="class-agnostic NMS before scoring (robustness rows only, e.g. 0.7)")
     a = ap.parse_args()
-    out = score(a.gt, a.results, verbose=not a.quiet)
+    out = score(a.gt, a.results, verbose=not a.quiet, nms_iou=a.nms)
     print("\n            AP    AP50  AP75  APS   APM   APL")
     for t in ("bbox", "keypoints"):
         print(f"{t:10s}" + "".join(f"{100 * out[t][k]:6.1f}"

@@ -4,37 +4,53 @@ Code to reproduce a comparison between [D-FINE-seg](https://github.com/ArgoHA/D-
 
 ## Results
 
-Test split: 420 images, 611 sources. Latency: RTX 5070 Ti, TensorRT 10.13.3.9 fp16, batch 1, idle GPU.
+Test split: 420 images, 611 sources. Both models are scored the same way: Gal-DINO's own evaluation of each model's full top-300 detections per image, with no NMS (see [NMS](#nms-protocol-and-robustness-check)). Latency: RTX 5070 Ti, TensorRT 10.13.3.9 fp16, batch 1, idle GPU, mean over the 420 test images.
 
 | model | params | input | box AP / AP50 / AP75 | IR-host kpt AP / AP50 / AP75 | e2e ms | engine ms |
 |---|---|---|---|---|---|---|
 | Gal-DINO, paper (Table 2) | 47 M | 800² | 53.7 / 60.2 / 58.9 | 48.1 / 53.4 / 48.4 | | |
 | Gal-DINO, released checkpoint, `main.py --eval` | 47 M | 800² | 53.73 / 60.18 / 58.91 | 48.14 / 53.41 / 48.50 | | |
-| Gal-DINO, TensorRT fp16 | 47 M | 800² | 53.75 / 60.18 / 58.89 | 48.20 / 53.40 / 48.83 | 11.57 | 11.69 |
-| Gal-DINO, TensorRT fp16 | 47 M | 640² | 52.65 / 61.10 / 59.78 | 47.85 / 54.94 / 49.86 | 7.75 | 8.02 |
-| D-FINE-seg S, PyTorch | 13.4 M | 640² | 58.41 / 63.8 / 59.7 | 61.51 / 63.3 / 62.3 | | |
-| **D-FINE-seg S, TensorRT fp16** | 13.4 M | 640² | **58.33 / 63.9 / 59.7** | **61.55 / 63.3 / 62.3** | **1.89** | **1.62** |
+| Gal-DINO, TensorRT fp16 | 47 M | 800² | 53.75 / 60.18 / 58.89 | 48.20 / 53.40 / 48.83 | 11.56 | 11.69 |
+| Gal-DINO, TensorRT fp16 | 47 M | 640² | 52.65 / 61.10 / 59.78 | 47.85 / 54.94 / 49.86 | 7.76 | 8.02 |
+| D-FINE-seg S, PyTorch | 13.4 M | 640² | 67.21 / 73.5 / 69.0 | 70.45 / 72.5 / 71.3 | | |
+| D-FINE-seg S, PyTorch, 3 seeds (mean ± SD) | 13.4 M | 640² | 66.4 ± 0.7 / 73.7 / 68.3 | 70.9 ± 0.4 / 72.6 / 71.8 | | |
+| **D-FINE-seg S, TensorRT fp16** | 13.4 M | 640² | **67.07 / 73.5 / 69.1** | **70.50 / 72.5 / 71.4** | **1.77** | **1.62** |
 
-- **e2e**: one call of each framework's own inference path. It starts from a decoded uint8 image in RAM and ends with final boxes, scores, labels and keypoints on the CPU, so preprocessing, the network, postprocessing and the device-to-host copy are all included. **engine**: TensorRT execute only, timed with the same loop for both models (`measure_engine.py`).
-- The images are 450×450, and both models upscale them. Gal-DINO at 640 is the same released checkpoint run at a smaller test size, not retrained. At equal 640 input, D-FINE-seg S scores +5.7 box AP and +13.7 keypoint AP, and is 4.1x faster e2e (4.9x engine-only).
-- The same paper's Gal-YOLOv8 (Table 4, no keypoints) has the best published box AP: 54.5 / 58.5 / 57.2 (APS 45.5, APM 55.4, APL 34.0). This repo reproduces Gal-DINO only, because it is the published model that also predicts hosts.
-- Size bins are small and noisy (only 68 large test objects). The released model is behind on box APL (32.0 vs 36.3) and keypoint APM (76.0 vs 81.6). Over three training seeds, box APL ranges 31.7–38.4 and keypoint APM 76.6–82.6. `score.py` prints every bin.
-- Seed spread: over three training seeds (PyTorch, test), D-FINE-seg S scores 57.7 ± 0.9 box AP and 61.7 ± 0.8 keypoint AP. See *Train it yourself*.
+- **e2e**: one call of each framework's own inference path. It starts from a decoded uint8 image in RAM and ends with final boxes, scores, labels and keypoints on the CPU, so preprocessing, the network, postprocessing and the device-to-host copy are all included. **engine**: TensorRT execute only, timed with the same loop for both models (`measure_engine.py`, median).
+- At the published 800 input, D-FINE-seg S scores +13.3 box AP and +22.3 keypoint AP over Gal-DINO, and is 6.5x faster e2e.
+- The images are 450×450, and both models upscale them. Gal-DINO at 640 is the same released checkpoint run at a smaller test size, not retrained. At equal 640 input, D-FINE-seg S scores +14.4 box AP and +22.7 keypoint AP, and is 4.4x faster e2e (4.9x engine-only).
+- The same paper's Gal-YOLOv8 (Table 4, no keypoints) has the best published box AP: 54.5 / 58.5 / 57.2 (APS 45.5, APM 55.4, APL 34.0). D-FINE-seg S is +12.6 box AP above it. This repo reproduces Gal-DINO only, because it is the published model that also predicts hosts.
+- Size bins are small and noisy (only 68 large test objects), but D-FINE-seg S leads in all of them: box APS / APM / APL 58.5 / 69.1 / 44.6 vs Gal-DINO's 41.5 / 56.7 / 36.3, keypoint APS / APM / APL 36.4 / 96.6 / 98.5 vs 17.6 / 81.6 / 88.8 (TensorRT rows). `score.py` prints every bin.
+- Seeds: the released model is seed 42, the first run. Seeds 1 and 2, with the same config, scored 66.1 and 66.0 box AP and 71.2 and 71.0 keypoint AP (PyTorch, test). The worst of the three runs is still +12.3 box AP and +22.2 keypoint AP above Gal-DINO.
+
+## NMS: protocol and robustness check
+
+Gal-DINO's evaluation submits its top 300 (query, class) pairs per image without NMS, so one box can appear under several classes. COCO AP scores each class separately, so this raises recall where the class is ambiguous (FR-I, FR-II, FR-X). D-FINE-seg produces the same kind of output (top 300 over queries × classes), and this repo scores both models that way.
+
+As a check, `score.py --nms 0.7` applies D-FINE-seg's built-in class-agnostic NMS (IoU 0.7) to any results file before scoring. On D-FINE-seg it gives exactly the same numbers as the model's own NMS. With NMS on both models (TensorRT fp16, test):
+
+| model | input | box AP | IR-host kpt AP |
+|---|---|---|---|
+| Gal-DINO | 800² | 43.99 | 39.50 |
+| Gal-DINO | 640² | 43.26 | 39.19 |
+| D-FINE-seg S | 640² | 58.33 | 61.55 |
+
+The lead holds under both protocols: +13.3 box and +22.3 keypoint AP without NMS, and +14.3 and +22.1 with it (vs Gal-DINO at 800). With NMS on, D-FINE-seg's e2e latency is 1.90 ms.
 
 ## Host examples
 
 ![Infrared-host predictions of D-FINE-seg and Gal-DINO](figures/host_examples.png)
 
-`figures/make_figure.py` draws the figure from the bundled TensorRT predictions. Each model runs at its own F1-optimal box confidence (D-FINE-seg 0.74, Gal-DINO 0.35), because the two models calibrate their scores very differently. A source counts as identified when it is detected (same class, IoU ≥ 0.5, one-to-one) and the predicted host has OKS ≥ 0.5, the benchmark's own rule. Of the 608 test sources whose host is inside the image, D-FINE-seg identifies 433 (71.2%) and Gal-DINO 345 (56.7%): 305 by both, 128 by D-FINE-seg only, 40 by Gal-DINO only. Box F1: 0.724 vs 0.630.
+`figures/make_figure.py` draws the figure from the bundled TensorRT predictions (no NMS for either model). Each model runs at its own confidence threshold, the one that maximizes box F1 on the val split (D-FINE-seg 0.77, Gal-DINO 0.33), because the two models calibrate their scores very differently. A source counts as identified when it is detected (same class, IoU ≥ 0.5, one-to-one) and the predicted host has OKS ≥ 0.5, the benchmark's own rule. Of the 608 test sources whose host is inside the image, D-FINE-seg identifies 437 (71.9%) and Gal-DINO 365 (60.0%): 329 by both, 108 by D-FINE-seg only, 36 by Gal-DINO only. Test box F1: 0.716 vs 0.627.
 
 ## Quick check: score the bundled predictions (no GPU, no models)
 
-`predictions/` holds the raw test-set outputs behind every row above, in the COCO results format. Scoring them needs only the test annotations and pycocotools:
+`predictions/` holds the raw test-set outputs behind every row above, in the COCO results format, plus the val-set TensorRT outputs that the figure uses to pick its thresholds. Scoring them needs only the test annotations and pycocotools:
 
 ```bash
 pip install pycocotools numpy
 python data/download.py     # RadioGalaxyNET from CSIRO DAP into data/RadioGalaxyNET (~270 MB)
-python verify.py            # scores all five files and checks them against the table
+python verify.py            # scores the test files, with and without NMS, and checks them against the tables
 python score.py data/RadioGalaxyNET/annotations/test.json predictions/galdino_trt_fp16_800_test.json.gz
 ```
 
@@ -54,15 +70,16 @@ uv run python score.py data/RadioGalaxyNET/annotations/test.json dfine_torch.jso
 DFINE_SEG_CONFIG_DIR=dfine uv run dfine export train.path_to_save=$PWD/weights "export.formats=[tensorrt]"
 uv run python dfine/predict.py --model weights/model.engine --out dfine_trt.json
 uv run python score.py data/RadioGalaxyNET/annotations/test.json dfine_trt.json
+uv run python score.py data/RadioGalaxyNET/annotations/test.json dfine_trt.json --nms 0.7   # robustness row
 
 # latency
 uv run python dfine/predict.py --model weights/model.engine --latency --conf 0.5 --repeats 3
 uv run python measure_engine.py weights/model.engine
 ```
 
-Scoring runs at confidence 0.001, because COCO AP needs the low-score tail (Gal-DINO submits its full top 300 per image). Latency runs at 0.5, the operating point, for both models.
+`predict.py` runs without NMS by default, the same protocol as Gal-DINO (`--nms 1` turns D-FINE-seg's NMS back on). Scoring runs at confidence 0.001, because COCO AP needs the low-score tail (Gal-DINO submits its full top 300 per image). Latency runs at 0.5, the operating point, for both models.
 
-`pyproject.toml` pins torch 2.13.0 and a few other packages to the versions behind the reported numbers. In a clean checkout, the PyTorch numbers reproduce exactly (58.4 / 61.5). A rebuilt fp16 engine scored 58.2 box AP and 61.5 keypoint AP, at 1.87 ms e2e and 1.59 ms engine-only. TensorRT picks kernels at build time, so each rebuild can move AP by about 0.1. A newer torch (2.15) shifted PyTorch AP by about 0.3.
+`pyproject.toml` pins torch 2.13.0 and a few other packages to the versions behind the reported numbers. In a clean checkout, the PyTorch numbers reproduce exactly (67.21 / 70.45). A rebuilt fp16 engine scored 67.0 box AP and 70.4 keypoint AP, at 1.75 ms e2e and 1.59 ms engine-only. TensorRT picks kernels at build time, so each rebuild can move AP by about 0.1. A newer torch (2.15) shifted PyTorch AP by about 0.3.
 
 ### Train it yourself (about 1 hour on one RTX 5070 Ti)
 
@@ -71,7 +88,7 @@ python data/build_dfine_dataset.py                 # data/dataset: symlinked ima
 DFINE_SEG_CONFIG_DIR=dfine uv run dfine train      # 75 epochs, best checkpoint by val -> output/models/
 ```
 
-The config is `dfine/config.yaml`: S model, COCO-detection init (auto-downloaded), 640² input, one keypoint with OKS sigma 0.107 (Gal-DINO's value), flips and 90° rotations. Photometric augmentations are off because the image channels encode radio intensity. The best checkpoint is picked on the val split. The released model is seed 42, the first run. Two more seeds (1, 2) with the same config scored, in PyTorch on test, 56.7 and 58.0 box AP and 61.0 and 62.6 keypoint AP; over the three seeds that is 57.7 ± 0.9 box AP and 61.7 ± 0.8 keypoint AP (mean ± sample SD). Expect a retrain to land anywhere in that range.
+The config is `dfine/config.yaml`: S model, COCO-detection init (auto-downloaded), 640² input, one keypoint with OKS sigma 0.107 (Gal-DINO's value), flips and 90° rotations. Photometric augmentations are off because the image channels encode radio intensity. The best checkpoint is picked on the val split. The released model is seed 42, the first run. Two more seeds (1, 2) with the same config scored, in PyTorch on test, 66.1 and 66.0 box AP and 71.2 and 71.0 keypoint AP; over the three seeds that is 66.4 ± 0.7 box AP and 70.9 ± 0.4 keypoint AP (mean ± sample SD). Expect a retrain to land anywhere in that range.
 
 `build_dfine_dataset.py` makes two geometry-only fixes to the training copy, because D-FINE-seg's augmentation pipeline rejects boxes outside the image: boxes and polygons are clipped to the image (40 boxes overshoot by at most 1 px), and the 17 host keypoints that lie outside the image (3 of them in test) are marked unlabeled. Scoring always uses the original JSON, where those 3 test hosts cannot be matched by any model.
 
@@ -113,11 +130,11 @@ How the Gal-DINO TensorRT path is built:
 
 ## Scoring protocol
 
-`SCORING.md` documents the protocol in full. In short: pycocotools `COCOeval`, run once for boxes and once for keypoints, with Gal-DINO's overrides (area ranges 24² and 48², OKS sigma 0.107, default maxDets), on the original test JSON. It also reproduces one detail of Gal-DINO's evaluation: keypoint results are loaded without boxes. Because of that, unmatched keypoint detections are not penalized in the medium and large rows, which is why keypoint APM and APL are much higher than keypoint AP for every model. On test and val, `score.py` matches all 22 numbers that `main.py --eval` prints, exactly.
+`SCORING.md` documents the protocol in full. In short: pycocotools `COCOeval`, run once for boxes and once for keypoints, with Gal-DINO's overrides (area ranges 24² and 48², OKS sigma 0.107, default maxDets), on the original test JSON. It also reproduces one detail of Gal-DINO's evaluation: keypoint results are loaded without boxes. Because of that, unmatched keypoint detections are not penalized in the medium and large rows, which is why keypoint APM and APL are much higher than keypoint AP for every model. On test and val, `score.py` matches all 22 numbers that `main.py --eval` prints, exactly. No NMS is applied to either model; `--nms IOU` exists only for the robustness check above.
 
 ## Notes on fairness
 
-- Both models are scored by the same scorer, and each runs its own pre- and postprocessing.
+- Both models are scored by the same scorer under the same protocol (full top-300, no NMS), and each runs its own pre- and postprocessing.
 - Training budgets differ: Gal-DINO's released checkpoint was trained for 30 epochs at batch 2 (from its saved arguments), and D-FINE-seg for 75 epochs (about 45 s per epoch). Both start from COCO-pretrained detectors.
 - Latency was measured back to back on an idle GPU.
 
