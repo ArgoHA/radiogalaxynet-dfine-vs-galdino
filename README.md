@@ -2,6 +2,8 @@
 
 Code to reproduce a comparison between [D-FINE-seg](https://github.com/ArgoHA/D-FINE-seg) S (keypoint task) and [Gal-DINO](https://github.com/Nikhel1/Gal-DINO), the published model for RadioGalaxyNET ([PASA 2024](https://doi.org/10.1017/pasa.2023.64), arXiv 2312.00306). Both models predict a box per radio galaxy (4 classes: FR-I, FR-II, FR-X, R) and one keypoint for its infrared host. Both are scored on the test split with Gal-DINO's own evaluation, reproduced exactly in `score.py`.
 
+See the model on held-out images (the "Radio galaxies and their hosts" card) at [dfine-seg.argoai.space](https://dfine-seg.argoai.space).
+
 ## Results
 
 | model | params | input | box AP | IR-host keypoint AP | latency |
