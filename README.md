@@ -4,7 +4,21 @@ Code to reproduce a comparison between [D-FINE-seg](https://github.com/ArgoHA/D-
 
 ## Results
 
-Test split: 420 images, 611 sources. Both models are scored the same way: Gal-DINO's own evaluation of each model's full top-300 detections per image, with no NMS (see [NMS](#nms-protocol-and-robustness-check)). Latency: RTX 5070 Ti, TensorRT 10.13.3.9 fp16, batch 1, idle GPU, mean over the 420 test images.
+| model | params | input | box AP | IR-host keypoint AP | latency |
+|---|---|---|---|---|---|
+| Gal-DINO (published model) | 47 M | 800² | 53.8 | 48.2 | 11.6 ms |
+| **D-FINE-seg S** | 13.4 M | 640² | **67.1** | **70.5** | **1.8 ms** |
+
+Test split (420 images, 611 sources), both models in TensorRT fp16 on an RTX 5070 Ti and scored with Gal-DINO's own evaluation. D-FINE-seg S is +13.3 box AP and +22.3 keypoint AP ahead, 6.5x faster end to end, with 3.5x fewer parameters. Over three training seeds it scores 66.4 ± 0.7 box AP and 70.9 ± 0.4 keypoint AP.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="figures/speed_accuracy_dark.png">
+  <img alt="Accuracy vs. speed on RadioGalaxyNET: D-FINE-seg S at 67.1 box AP and 70.5 keypoint AP in 1.8 ms, Gal-DINO at 53.8 and 48.2 AP in 11.6 ms (800 input) and 52.7 and 47.9 AP in 7.8 ms (640 input)" src="figures/speed_accuracy.png">
+</picture>
+
+### All results
+
+Both models are scored the same way: Gal-DINO's own evaluation of each model's full top-300 detections per image, with no NMS (see [NMS](#nms-protocol-and-robustness-check)). Latency: RTX 5070 Ti, TensorRT 10.13.3.9 fp16, batch 1, idle GPU, mean over the 420 test images. The PyTorch rows show that the TensorRT export keeps accuracy, and give the seed spread (the extra seeds were not exported).
 
 | model | params | input | box AP / AP50 / AP75 | IR-host kpt AP / AP50 / AP75 | e2e ms | engine ms |
 |---|---|---|---|---|---|---|
@@ -17,7 +31,6 @@ Test split: 420 images, 611 sources. Both models are scored the same way: Gal-DI
 | **D-FINE-seg S, TensorRT fp16** | 13.4 M | 640² | **67.07 / 73.5 / 69.1** | **70.50 / 72.5 / 71.4** | **1.77** | **1.62** |
 
 - **e2e**: one call of each framework's own inference path. It starts from a decoded uint8 image in RAM and ends with final boxes, scores, labels and keypoints on the CPU, so preprocessing, the network, postprocessing and the device-to-host copy are all included. **engine**: TensorRT execute only, timed with the same loop for both models (`measure_engine.py`, median).
-- At the published 800 input, D-FINE-seg S scores +13.3 box AP and +22.3 keypoint AP over Gal-DINO, and is 6.5x faster e2e.
 - The images are 450×450, and both models upscale them. Gal-DINO at 640 is the same released checkpoint run at a smaller test size, not retrained. At equal 640 input, D-FINE-seg S scores +14.4 box AP and +22.7 keypoint AP, and is 4.4x faster e2e (4.9x engine-only).
 - The same paper's Gal-YOLOv8 (Table 4, no keypoints) has the best published box AP: 54.5 / 58.5 / 57.2 (APS 45.5, APM 55.4, APL 34.0). D-FINE-seg S is +12.6 box AP above it. This repo reproduces Gal-DINO only, because it is the published model that also predicts hosts.
 - Size bins are small and noisy (only 68 large test objects), but D-FINE-seg S leads in all of them: box APS / APM / APL 58.5 / 69.1 / 44.6 vs Gal-DINO's 41.5 / 56.7 / 36.3, keypoint APS / APM / APL 36.4 / 96.6 / 98.5 vs 17.6 / 81.6 / 88.8 (TensorRT rows). `score.py` prints every bin.
@@ -41,7 +54,7 @@ The lead holds under both protocols: +13.3 box and +22.3 keypoint AP without NMS
 
 ![Infrared-host predictions of D-FINE-seg and Gal-DINO](figures/host_examples.png)
 
-`figures/make_figure.py` draws the figure from the bundled TensorRT predictions (no NMS for either model). Each model runs at its own confidence threshold, the one that maximizes box F1 on the val split (D-FINE-seg 0.77, Gal-DINO 0.33), because the two models calibrate their scores very differently. A source counts as identified when it is detected (same class, IoU ≥ 0.5, one-to-one) and the predicted host has OKS ≥ 0.5, the benchmark's own rule. Of the 608 test sources whose host is inside the image, D-FINE-seg identifies 437 (71.9%) and Gal-DINO 365 (60.0%): 329 by both, 108 by D-FINE-seg only, 36 by Gal-DINO only. Test box F1: 0.716 vs 0.627.
+`figures/make_speed_chart.py` draws the accuracy vs. speed chart from the TensorRT rows of the table. `figures/make_figure.py` draws the host figure from the bundled TensorRT predictions (no NMS for either model). Each model runs at its own confidence threshold, the one that maximizes box F1 on the val split (D-FINE-seg 0.77, Gal-DINO 0.33), because the two models calibrate their scores very differently. A source counts as identified when it is detected (same class, IoU ≥ 0.5, one-to-one) and the predicted host has OKS ≥ 0.5, the benchmark's own rule. Of the 608 test sources whose host is inside the image, D-FINE-seg identifies 437 (71.9%) and Gal-DINO 365 (60.0%): 329 by both, 108 by D-FINE-seg only, 36 by Gal-DINO only. Test box F1: 0.716 vs 0.627.
 
 ## Quick check: score the bundled predictions (no GPU, no models)
 
