@@ -1,0 +1,229 @@
+# Default D-FINE-seg config, emitted by `dfine-seg init`
+# Edit train.root, train.label_to_name and task
+project_name: radio_galaxy # for wandb
+exp_name: kpts_s_base # experiment name
+
+exp: ${exp_name}_${now_dir}
+
+model_name: s # model size (n, s, m, l, x)
+task: kpts # detect | segment (instance segmentation) | sem_seg (semantic segmentation) | kpts (keypoints)
+
+train:
+  ### Paths ###
+  root: ${oc.env:PWD} # repo root (run dfine from there): data/ and output/ live under it
+  pretrained_dataset: coco # detect init family: coco | obj2coco
+  # init any task from det weights:  dfine_${model_name}_${train.pretrained_dataset}.pt   (default)
+  # segment/sem_seg COCO init:       dfine_seg_${model_name}_coco.pt
+  # sem_seg Cityscapes init:         dfine_sem_${model_name}_cityscapes.pt
+  # kpts COCO person init:           dfine_kpts_${model_name}_coco.pt
+  pretrained_model_path: ${train.root}/pretrained/dfine_${model_name}_${train.pretrained_dataset}.pt # auto-downloaded from Hugging Face
+
+  imagenet_backbone: False # research: init HGNetv2 from ImageNet stage1 weights
+  coco_dataset: True # set True when annotations are in COCO JSON format (train/val/test)
+
+  data_path: ${train.root}/data/dataset # path to dataset (images/, labels/, train.csv, val.csv)
+  path_to_test_data: ${train.root}/data/test  # path to test set, used in infer script
+  path_to_save: ${train.root}/output/models/${exp} # where to save output
+
+  debug_img_path: ${train.root}/output/debug_images
+  eval_preds_path: ${train.root}/output/eval_preds
+  bench_img_path: ${train.root}/output/bench_imgs
+  infer_path: ${train.root}/output/infer
+
+  ### Configs ###
+  use_wandb: False # set True to log to Weights & Biases (requires `wandb login`)
+  device: cuda # cuda | cpu | mps
+  label_to_name: # dataset's classes - EDIT ME (0-indexed and contiguous)
+    0: FR-II
+    1: FR-I
+    2: FR-X
+    3: R
+
+  use_one_class: False
+  # LVIS repeat-factor sampling: draw train images with rare classes more often (not under DDP)
+  rare_class_sampling: false # not supported in DDP setup
+
+  # Knowledge distillation from a frozen trained teacher with the same classes (train-only).
+  # detect learns from a detect or segment teacher, segment from segment, sem_seg from sem_seg
+  kd:
+    # path to the teacher's model.pt. null = off
+    teacher: null
+    img_size: null # teacher input (h, w); null = the teacher's own
+    teacher_batch: null # teacher forward chunk size for all tasks (VRAM); null = whole batch
+    cls_weight: 1.0 # detect/segment: class scores of queries matched to the same GT
+    loc_weight: 1.5 # detect/segment: edge distributions, re-binned into the student's frame
+    mask_weight: 1.0 # segment: mask probabilities of the matched queries
+    sem_seg_weight: 3.0 # sem_seg: channel-wise distillation of the 1/4 logits
+    sem_seg_tau: 4.0 # sem_seg: softmax temperature
+
+  # sem_seg only: masks live in <data_path>/labels/<stem>.png, 1 channel, pixel value = class id
+  sem_seg:
+    ignore_index: 255 # pixel value excluded from loss + mIoU (also used as aug mask fill)
+    class_weights: null # optional per-class CE weights for imbalance
+
+  # kpts only: box + K keypoints per object. YOLO: `cls xc yc w h x1 y1 [v1] ... xK yK [vK]`
+  # COCO json: ann["keypoints"]. v: 0 unlabeled, 1 occluded, 2 visible
+  kpts:
+    shape: [1, 3] # [K, 3] with visibility flags, [K, 2] without ((0, 0) = unlabeled)
+    # slot i -> flip_idx[i] on flips: swap symmetric pairs (left/right eye), else keep (e.g.
+    # [0, 1] for head, tail); required if K > 1 and any flip aug > 0. Default: COCO person
+    flip_idx: [0]
+    sigmas: [0.107] # per-point OKS scale; null = COCO's for K=17, else 0.07 (see README)
+    names: [ir_host] # optional point names
+    skeleton: null # optional zero-based [[i, j], ...] pairs, drawing only
+    conf_thresh: 0.5 # presence threshold: drawing, infer labels, presence_f1; outputs keep all K
+    visible_thresh: 0.5 # visible vs occluded: filled vs hollow marker, v=2 vs v=1 in infer labels
+    freeze_except_kpt: False # freeze everything except the keypoint head
+
+  ### Distributed Training (DDP) ###
+  ddp:
+    enabled: False  # set to true to use multi-GPU
+    n_gpus: 2  # how many GPUs / processes per node for torchrun
+
+  # f1, iou, mAP_50, mAP_50_95, mAP_50_mask, mAP_50_95_mask; sem_seg overrides to mIoU,
+  # kpts to mAP_50_95_kpt + mAP_50_95
+  decision_metrics:
+  - f1
+  - mAP_50 # will be swapped with mask version for task = segment
+  - iou
+
+  img_size: [640, 640] # (h, w)
+  in_channels: 3 # 3 = RGB (default). >3 expects .npy stacks (RGB+extras) - see README
+  keep_ratio: False # image aspect ratio, if True - image will be padded
+  to_visualize_eval: True # save images with gt and preds
+  debug_img_processing: True # save images after preprocessing
+
+  amp_enabled: True # use automatic mixed precision
+  amp_dtype: bfloat16 # bfloat16/float16
+  clip_max_norm: 0.1 # gradient clipping
+
+  batch_size: -1 # physical, should fit on the device. In DDP used per GPU. Auto-pick with -1
+  b_accum_steps: 1 # grad accumulation (n * bs)
+  epochs: 75
+  max_walltime_min: null # research: stop training after N minutes (best epoch kept); null = no cap
+  early_stopping: 0 # 0 - no early stopping
+  ignore_background_epochs: 0 # background images not used for N epochs in train set. Ignored for sem_seg
+  num_workers: 12 # In DDP used per GPU. Go lower if RAM is tight for segmentation
+  mask_batch_size: 150 # number of images to process at once when computing mask metrics
+  freeze_except_mask: False # freeze everything except MaskDecoder
+
+  ### Validation ###
+  conf_thresh: 0.5
+  iou_thresh: 0.5
+
+  ### EMA ###
+  use_ema: True # use exponential moving average model
+  ema_momentum: 0.9998
+
+  ### Optimizer and Scheduler ###
+  use_scheduler: True
+  use_muon: True # True -> route enc/dec attn+MLP matrices to Muon, rest stays AdamW
+  aux_optimizer: adan # adamw|adan: optimizer for non-Muon (aux) groups; ignored if use_muon: False
+  adan_lr_mult: 5.0 # adan only: aux-group peak-LR multiplier vs the AdamW aux peak (Adan convention)
+  adan_betas: [0.98, 0.92, 0.99] # adan only: exactly 3 betas (b1,b2,b3); AdamW uses train.betas
+  base_lr: ${train.lrs.${model_name}.base_lr}
+  backbone_lr: ${train.lrs.${model_name}.backbone_lr}
+  cycler_pct_start: 0.1
+  weight_decay: 0.000125
+  betas: [0.9, 0.999]
+  label_smoothing: 0.0
+
+  ### Augs ###
+  mosaic_augs: # all tasks
+    # mosaic_prob: null = task default (0.8 det, 0.5 segment/sem_seg)
+    # set a number to override, 0 disables
+    mosaic_prob: null
+    no_mosaic_epochs: 5
+    mosaic_scale: [0.5, 1.5]
+    degrees: 0.0 # not recommended if bbox precision is critical
+    translate: 0.2
+    shear: 2.0
+
+  augs:
+    rotation_degree: 10 # maximum +- rotation
+    rotation_p: 0.05 # probability of the rotation (with above degree)
+    multiscale_prob: 0.0 # ignored for sem_seg (box-collate multiscale)
+    scale_jitter: null # only for sem_seg:, e.g. [0.75, 1.5]
+    rotate_90: 0.5 # 90° rotation; for top-down data (aerial, documents), not street scenes
+    left_right_flip: 0.5
+    up_down_flip: 0.5
+    to_gray: 0.0
+    blur: 0.0
+    gamma: 0.0
+    brightness: 0.0
+    noise: 0.0
+    coarse_dropout: 0.0
+
+  ### Reproducibility ###
+  seed: 42
+  cudnn_fixed: False
+
+  ### Recommended learning rates ###
+  lrs:
+    n:
+      backbone_lr: 0.0004
+      base_lr: 0.0008
+    s:
+      backbone_lr: 0.00006  # can setup up to 0.0002
+      base_lr: 0.00025  # 0.0004
+    m:
+      backbone_lr: 0.00002  # 0.000025
+      base_lr: 0.00015  # 0.00025
+    l:
+      backbone_lr: 0.00001 # 0.00000625 - 0.0000125
+      base_lr: 0.00016 # 0.000125 - 0.00025
+    x:
+      backbone_lr: 0.000002  # 0.0000015 - 0.0000025
+      base_lr: 0.0002  # 0.0001 - 0.00025
+
+
+split:
+  ignore_negatives: False # only use images with labels
+  shuffle: True
+  train_split: 0.85
+  val_split: 0.15 # test_split = 1 - train_split - val_split
+
+
+export: # TensorRT must be done on the inference device
+  from_pretrained: False # if True - exports pretrained weights, training is not needed
+  half: True # tensorrt, openvino
+  max_batch_size: 1 # torch, tensorrt, openvino
+  dynamic_input: False # dynamic H/W, onnx and openvino; tensorrt and coreml are static
+  sem_seg_probs: False # sem_seg: add the 1/4-scale softmax [C, H/4, W/4] output next to the label map
+  formats: [onnx, tensorrt, openvino, coreml] # null = all; litert paused (litert-torch caps torch<2.13)
+  parity: True # after export, print cosine / max-abs-diff of each backend vs torch on one input
+  ov_int8_max_drop: 0.02
+  trt_int8_workspace_gb: 4
+  trt_int8_validate: True
+
+
+bench:
+  formats: # which backends to bench
+    - torch
+    - tensorrt
+    - onnx
+    - openvino
+    - coreml
+    # - litert  # paused: litert-torch caps torch<2.13
+
+
+infer:
+  to_crop: True  # if True - saves crops of detected objects
+  to_track: True  # videos only: assign persistent IDs via ByteTrack and write annotated mp4
+  paddings: # if int - amount of pixes, if float - percentage of image size
+    w: 0.05
+    h: 0.05
+
+
+### service ###
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
+now_dir: &nowdir ${now:%Y-%m-%d}

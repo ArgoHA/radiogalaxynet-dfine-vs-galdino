@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+data/RadioGalaxyNET/
+data/dataset/
+weights/
+pretrained/
+output/
+outputs/
+galdino/Gal-DINO/
+*.engine
+*.onnx
